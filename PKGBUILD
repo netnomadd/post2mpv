@@ -1,5 +1,5 @@
 # Maintainer: Your Name <you@example.com>
-pkgname=post2mpv
+pkgname=post2mpv-firefox
 pkgver=1.0.0
 pkgrel=1
 pkgdesc="post2mpv Firefox extension (XPI) and native bridge"
