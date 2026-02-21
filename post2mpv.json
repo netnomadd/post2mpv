@@ -1,0 +1,9 @@
+{
+  "name": "post2mpv",
+  "description": "post2mpv native bridge (POST to post2mpv server with X-POST2MPV-TOKEN header)",
+  "path": "~/.local/bin/post2mpv-bridge",
+  "type": "stdio",
+  "allowed_extensions": [
+    "post2mpv@netnom.uk"
+  ]
+}

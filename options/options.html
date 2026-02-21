@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>post2mpv options</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <div class="warning">
+      <p>
+        <strong>Warning</strong>: Only add profiles that you trust! Arbitrary MPV flags should be considered arbitrary code, and should be reviewed carefully. <a href="https://mpv.io/manual">mpv manual</a>
+      </p>
+    </div>
+
+    <div class="hint">
+      Each profile's "content" is JSON with fields:
+      <code>host</code>, <code>port</code>, <code>action</code> (default "play"), <code>args</code> (array), <code>token</code> (optional).
+    </div>
+
+    <div id="profiles-wrapper"></div>
+
+    <div id="status" class="status"></div>
+
+    <button id="add" class="button">Add profile</button>
+
+    <script src="options.js"></script>
+  </body>
+</html>
