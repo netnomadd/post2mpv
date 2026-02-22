@@ -17,12 +17,12 @@ build() {
 }
 
 package() {
-  install -Dm755 "$srcdir/post2mpv-bridge" "$pkgdir/usr/bin/post2mpv-bridge"
-  install -Dm644 "$srcdir/v${pkgver}.xpi" "$pkgdir/usr/share/mozilla/extensions/post2mpv@netnom.uk.xpi"
+  install -Dm755 "$srcdir/post2mpv-bridge" "${pkgdir}/usr/bin/post2mpv-bridge"
+  install -Dm644 "$srcdir/v${pkgver}.xpi" "${pkgdir}/usr/share/mozilla/extensions/post2mpv@netnom.uk.xpi"
 
   # generate system manifest for Firefox
-  mkdir -p "$pkgdir/usr/lib/mozilla/native-messaging-hosts"
-  "$pkgdir/usr/bin/post2mpv-bridge" --manifest > "$pkgdir/usr/lib/mozilla/native-messaging-hosts/post2mpv.json"
-  chmod 644 "$pkgdir/usr/lib/mozilla/native-messaging-hosts/post2mpv.json"
+  mkdir -p "${pkgdir}/usr/lib/mozilla/native-messaging-hosts"
+  "${pkgdir}/usr/bin/post2mpv-bridge" --manifest > "/usr/lib/mozilla/native-messaging-hosts/post2mpv.json"
+  chmod 644 "${pkgdir}/usr/lib/mozilla/native-messaging-hosts/post2mpv.json"
 }
 
