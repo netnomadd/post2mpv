@@ -4,11 +4,12 @@ if (typeof browser === 'undefined') {
 }
 
 async function getProfiles() {
-  return new Promise((resolve) => {
-    browser.storage.sync.get('profiles', (res) => {
-      resolve(res['profiles'] || []);
-    });
-  });
+  const resp = await browser.runtime.sendMessage({ type: 'getProfiles' });
+  if (!resp || resp.status !== 'ok') {
+    const msg = (resp && (resp.message || resp.detail)) || 'не удалось загрузить профили';
+    throw new Error(msg);
+  }
+  return resp.profiles || [];
 }
 
 async function getCurrentTab() {
@@ -19,30 +20,32 @@ async function getCurrentTab() {
 async function init() {
   const profilesList = document.getElementById('profiles-list');
   const settingsBtn = document.getElementById('settings');
-  
+
+  settingsBtn.addEventListener('click', () => {
+    browser.runtime.openOptionsPage();
+    window.close();
+  });
+
   try {
     const profiles = await getProfiles();
     const currentTab = await getCurrentTab();
-    
+
     if (profiles.length === 0) {
       profilesList.innerHTML = '<div class="info">❌ Профилей не создано<br><br>Нажмите "Настройки" для создания первого профиля</div>';
       return;
     }
-    
-    // Очистить loading
+
     profilesList.innerHTML = '';
-    
-    // Добавить кнопки профилей
+
     profiles.forEach((profile) => {
       const btn = document.createElement('button');
       btn.className = 'profile-btn';
       btn.textContent = profile.name;
-      btn.title = `Хост: ${profile.content ? JSON.parse(profile.content).host : 'localhost'}`;
-      
+      btn.title = `Хост: ${profile.host || 'localhost'}`;
+
       btn.addEventListener('click', async () => {
         console.debug('[popup] Выбран профиль:', profile.name);
-        
-        // Отправляем сообщение фоновому скрипту
+
         browser.runtime.sendMessage({
           type: 'playWithProfile',
           profileId: profile.id,
@@ -50,27 +53,21 @@ async function init() {
           tabId: currentTab.id
         }).then((response) => {
           console.debug('[popup] Ответ:', response);
-          // Закрыть popup после отправки
           window.close();
         }).catch((error) => {
           console.error('[popup] Ошибка:', error);
           alert('Ошибка: ' + error.message);
         });
       });
-      
+
       profilesList.appendChild(btn);
     });
-    
+
   } catch (e) {
     console.error('[popup] Ошибка инициализации:', e);
-    profilesList.innerHTML = '<div class="info">❌ Ошибка загрузки профилей</div>';
+    profilesList.innerHTML = '<div class="info">❌ Ошибка загрузки профилей<br><br>' +
+      e.message + '</div>';
   }
-  
-  // Обработчик кнопки настроек
-  settingsBtn.addEventListener('click', () => {
-    browser.runtime.openOptionsPage();
-    window.close();
-  });
 }
 
 document.addEventListener('DOMContentLoaded', init);

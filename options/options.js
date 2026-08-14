@@ -6,7 +6,7 @@
 
   const DEFAULT_CFG = {
     host: "http://127.0.0.1",
-    port: 7541,
+    port: 7531,
     action: "play",
     args: ["--no-terminal"],
     token: ""
@@ -14,7 +14,7 @@
   const DEFAULT_PLACEHOLDER = JSON.stringify(DEFAULT_CFG, null, 2);
 
   function $(sel, root = document) { return root.querySelector(sel); }
-  
+
   function createEl(tag, attrs = {}, text) {
     const el = document.createElement(tag);
     for (const k in attrs) el.setAttribute(k, attrs[k]);
@@ -22,52 +22,11 @@
     return el;
   }
 
-  // ========================================================================
-  // РАБОТА С ХРАНИЛИЩЕМ (Firefox/Chrome совместимо)
-  // ========================================================================
-  
-  function storageGet(key) {
-    return new Promise((resolve, reject) => {
-      try {
-        browser.storage.sync.get(key, (res) => {
-          if (browser.runtime.lastError) {
-            reject(browser.runtime.lastError);
-          } else {
-            resolve(res[key]);
-          }
-        });
-      } catch (e) {
-        reject(e);
-      }
-    });
-  }
-
-  function storageSet(obj) {
-    return new Promise((resolve, reject) => {
-      try {
-        browser.storage.sync.set(obj, () => {
-          if (browser.runtime.lastError) {
-            reject(browser.runtime.lastError);
-          } else {
-            resolve();
-          }
-        });
-      } catch (e) {
-        reject(e);
-      }
-    });
-  }
-
-  // ========================================================================
-  // ОТПРАВКА СООБЩЕНИЙ В ФОНОВЫЙ СКРИПТ
-  // ========================================================================
-  
   function sendMessageAsync(message) {
     return new Promise((resolve, reject) => {
       try {
         console.debug('[options] Отправляем сообщение:', message);
-        
-        // Firefox использует Promise API
+
         if (browser && browser.runtime && browser.runtime.sendMessage) {
           browser.runtime.sendMessage(message).then(
             (response) => {
@@ -89,45 +48,78 @@
     });
   }
 
-  // ========================================================================
-  // ЗАГРУЗКА И СОХРАНЕНИЕ ПРОФИЛЕЙ
-  // ========================================================================
-  
+  function contentFromStored(profile) {
+    return JSON.stringify({
+      host: profile.host || DEFAULT_CFG.host,
+      port: profile.port || DEFAULT_CFG.port,
+      action: profile.action || DEFAULT_CFG.action,
+      args: Array.isArray(profile.args) ? profile.args : (Array.isArray(profile.params) ? profile.params : DEFAULT_CFG.args),
+      token: typeof profile.token === 'undefined' ? "" : profile.token
+    }, null, 2);
+  }
+
+  function toUiProfile(profile) {
+    if (typeof profile.content === 'string') {
+      return {
+        id: profile.id || cryptoRandomId(),
+        name: profile.name || 'Безымянный профиль',
+        content: profile.content
+      };
+    }
+    return {
+      id: profile.id || cryptoRandomId(),
+      name: profile.name || 'Безымянный профиль',
+      content: contentFromStored(profile)
+    };
+  }
+
+  function toStoredProfile(profile) {
+    const parsed = JSON.parse(profile.content);
+    if (!parsed.host) parsed.host = DEFAULT_CFG.host;
+    if (!parsed.port) parsed.port = DEFAULT_CFG.port;
+    if (!parsed.action) parsed.action = DEFAULT_CFG.action;
+    if (!Array.isArray(parsed.args)) {
+      parsed.args = Array.isArray(parsed.params) ? parsed.params : [];
+    }
+    if (typeof parsed.token === 'undefined') parsed.token = "";
+    return {
+      id: profile.id,
+      name: profile.name || 'Безымянный профиль',
+      host: parsed.host,
+      port: parsed.port,
+      action: parsed.action,
+      args: parsed.args,
+      token: parsed.token
+    };
+  }
+
   async function loadProfiles() {
-    try {
-      const profiles = await storageGet('profiles');
-      return profiles || [];
-    } catch (e) {
-      console.error('[options] Ошибка загрузки профилей:', e);
-      return [];
-    }
+    const resp = await sendMessageAsync({ type: 'getProfiles' });
+    return resp;
   }
 
-async function saveProfiles(profiles) {
-  try {
-    await storageSet({profiles});
-    showStatus('Сохранено ✓', 2000);
-    console.debug('[options] Профили сохранены');
-    
-    // Отправляем сообщение фоновому скрипту для обновления меню
+  async function saveProfiles(uiProfiles) {
     try {
-      const response = await sendMessageAsync({
-        type: 'refreshProfiles'
+      const stored = uiProfiles.map(toStoredProfile);
+      const resp = await sendMessageAsync({
+        type: 'saveProfiles',
+        profiles: stored
       });
-      console.debug('[options] Меню обновлено:', response);
+      if (!resp || resp.status !== 'ok') {
+        const msg = (resp && (resp.message || resp.detail)) || 'неизвестная ошибка';
+        showStatus('Ошибка сохранения: ' + msg, 4000, 'error');
+        return false;
+      }
+      showStatus('Сохранено ✓', 2000);
+      console.debug('[options] Профили сохранены', resp.path);
+      return true;
     } catch (e) {
-      console.debug('[options] Ошибка при обновлении меню:', e);
+      console.error('[options] Ошибка сохранения:', e);
+      showStatus('Ошибка сохранения: ' + e.message, 3000, 'error');
+      return false;
     }
-  } catch (e) {
-    console.error('[options] Ошибка сохранения:', e);
-    showStatus('Ошибка сохранения: ' + e.message, 3000, 'error');
   }
-}
 
-  // ========================================================================
-  // ПОКАЗ СТАТУСА
-  // ========================================================================
-  
   function showStatus(msg, timeout = 2000, type = 'success') {
     const st = $('#status');
     st.textContent = msg;
@@ -137,21 +129,22 @@ async function saveProfiles(profiles) {
     }
     console.debug('[options] Статус:', msg);
     if (timeout) {
-      setTimeout(() => { 
+      setTimeout(() => {
         st.textContent = '';
         st.className = 'status';
       }, timeout);
     }
   }
 
-  // ========================================================================
-  // ПОСТРОЕНИЕ ЭЛЕМЕНТА ПРОФИЛЯ
-  // ========================================================================
-  
+  function setConfigPath(path) {
+    const el = $('#config-path');
+    if (!el || !path) return;
+    el.textContent = path;
+  }
+
   function buildProfileElement(profile, profiles) {
     const el = createEl('div', {class: 'profile'});
 
-    // Строка с названием и кнопкой удаления
     const meta = createEl('div', {class: 'meta'});
     const nameInput = createEl('input', {
       type: 'text',
@@ -166,15 +159,13 @@ async function saveProfiles(profiles) {
 
     el.appendChild(meta);
 
-    // Текстовое поле с JSON конфигурацией
     const textarea = createEl('textarea');
     textarea.placeholder = DEFAULT_PLACEHOLDER;
     textarea.value = profile.content || DEFAULT_PLACEHOLDER;
     el.appendChild(textarea);
 
-    // Строка с кнопками действий и статусом
     const row = createEl('div', {class: 'meta'});
-    
+
     const validateBtn = createEl('button', {class: 'button validate'}, '✓ Проверить и сохранить');
     validateBtn.type = 'button';
     row.appendChild(validateBtn);
@@ -188,32 +179,25 @@ async function saveProfiles(profiles) {
 
     el.appendChild(row);
 
-    // ====================================================================
-    // ОБРАБОТЧИК УДАЛЕНИЯ ПРОФИЛЯ
-    // ====================================================================
-    
     removeBtn.addEventListener('click', async () => {
       const idx = profiles.indexOf(profile);
       if (idx >= 0) {
         const confirmed = confirm(`Удалить профиль "${profile.name}"?`);
         if (confirmed) {
           profiles.splice(idx, 1);
-          await saveProfiles(profiles);
-          renderProfiles(profiles);
-          console.debug('[options] Профиль удалён');
+          const ok = await saveProfiles(profiles);
+          if (ok) {
+            renderProfiles(profiles);
+            console.debug('[options] Профиль удалён');
+          }
         }
       }
     });
 
-    // ====================================================================
-    // ОБРАБОТЧИК ПРОВЕРКИ И СОХРАНЕНИЯ
-    // ====================================================================
-    
     validateBtn.addEventListener('click', async () => {
       try {
         const parsed = JSON.parse(textarea.value);
-        
-        // Установка значений по умолчанию
+
         if (!parsed.host) parsed.host = DEFAULT_CFG.host;
         if (!parsed.port) parsed.port = DEFAULT_CFG.port;
         if (!parsed.action) parsed.action = DEFAULT_CFG.action;
@@ -221,14 +205,12 @@ async function saveProfiles(profiles) {
           parsed.args = Array.isArray(parsed.params) ? parsed.params : [];
         }
         if (typeof parsed.token === 'undefined') parsed.token = "";
-        
-        // Сохранение названия
+
         profile.name = nameInput.value || profile.name || 'Безымянный профиль';
-        
-        // Сохранение нормализованного JSON
         profile.content = JSON.stringify(parsed, null, 2);
-        await saveProfiles(profiles);
-        
+        const ok = await saveProfiles(profiles);
+        if (!ok) return;
+
         status.classList.remove('error');
         status.textContent = '✓ Корректно';
         console.debug('[options] Профиль проверен и сохранён');
@@ -240,21 +222,16 @@ async function saveProfiles(profiles) {
       }
     });
 
-    // ====================================================================
-    // ОБРАБОТЧИК ТЕСТА
-    // ====================================================================
-    
     testBtn.addEventListener('click', async () => {
       try {
         const parsed = JSON.parse(textarea.value);
-        
-        // Запрос URL для теста
+
         const url = prompt('Введите URL для теста (например: https://www.youtube.com/watch?v=...):');
         if (!url) {
           console.debug('[options] Тест отменён');
           return;
         }
-        
+
         const payload = {
           url,
           action: parsed.action || 'play',
@@ -265,18 +242,18 @@ async function saveProfiles(profiles) {
         status.classList.remove('error');
         console.debug('[options] Отправляем тестовое сообщение для профиля:', profile.id);
 
-        // Отправка сообщения на фоновый скрипт
         const msg = {
           type: 'sendToNative',
           profileId: profile.id,
+          profile: parsed,
           payload,
           test: true
         };
-        
+
         try {
           const resp = await sendMessageAsync(msg);
           console.debug('[options] Ответ на тест:', resp);
-          
+
           if (resp && resp.status === 'ok') {
             status.classList.remove('error');
             status.textContent = '✓ Отправлено на сервер';
@@ -291,7 +268,7 @@ async function saveProfiles(profiles) {
           status.classList.add('error');
           status.textContent = '✗ Ошибка: ' + e.message;
         }
-        
+
         setTimeout(() => status.textContent = '', 5000);
       } catch (e) {
         status.classList.add('error');
@@ -303,48 +280,61 @@ async function saveProfiles(profiles) {
     return el;
   }
 
-  // ========================================================================
-  // ОТРИСОВКА ВСЕХ ПРОФИЛЕЙ
-  // ========================================================================
-  
   function renderProfiles(profiles) {
     const wrapper = $('#profiles-wrapper');
     wrapper.innerHTML = '';
-    
+
     if (profiles.length === 0) {
       const empty = createEl('div', {class: 'hint'});
-      empty.textContent = 'Профилей нет. Нажмите "Добавить профиль" для создания.';
+      empty.textContent = 'Профилей нет. Нажмите "Добавить профиль" для создания. Файл hosts.json появится при первом сохранении.';
       wrapper.appendChild(empty);
       return;
     }
-    
+
     profiles.forEach(p => {
       wrapper.appendChild(buildProfileElement(p, profiles));
     });
     console.debug('[options] Отрисовано профилей:', profiles.length);
   }
 
-  // ========================================================================
-  // ИНИЦИАЛИЗАЦИЯ СТРАНИЦЫ
-  // ========================================================================
-  
+  function showLoadError(message) {
+    const wrapper = $('#profiles-wrapper');
+    wrapper.innerHTML = '';
+    const empty = createEl('div', {class: 'hint'});
+    empty.textContent = 'Не удалось прочитать hosts.json: ' + message +
+      ' Исправьте файл и откройте настройки снова — файл не будет перезаписан.';
+    wrapper.appendChild(empty);
+    const addBtn = $('#add');
+    if (addBtn) addBtn.disabled = true;
+  }
+
   async function init() {
     console.debug('[options] Инициализация страницы опций');
-    
+
     const addBtn = $('#add');
-    let profiles = await loadProfiles();
-    
-    // Убедимся, что у всех профилей есть ID
-    profiles = profiles.map(p => ({ 
-      id: p.id || cryptoRandomId(), 
-      name: p.name || 'Безымянный профиль', 
-      content: p.content || DEFAULT_PLACEHOLDER 
-    }));
-    
-    await saveProfiles(profiles);
+    let profiles = [];
+
+    try {
+      const resp = await loadProfiles();
+      if (resp && resp.path) setConfigPath(resp.path);
+
+      if (!resp || resp.status !== 'ok') {
+        const msg = (resp && (resp.message || resp.detail)) || 'нет ответа от native host';
+        showLoadError(msg);
+        showStatus(msg, 0, 'error');
+        console.error('[options] Ошибка загрузки профилей:', msg);
+        return;
+      }
+
+      profiles = (resp.profiles || []).map(toUiProfile);
+    } catch (e) {
+      showLoadError(e.message);
+      showStatus('Ошибка загрузки: ' + e.message, 0, 'error');
+      return;
+    }
+
     renderProfiles(profiles);
 
-    // Обработчик кнопки "Добавить профиль"
     addBtn.addEventListener('click', async () => {
       const newProfile = {
         id: cryptoRandomId(),
@@ -352,38 +342,26 @@ async function saveProfiles(profiles) {
         content: DEFAULT_PLACEHOLDER
       };
       profiles.push(newProfile);
-      await saveProfiles(profiles);
+      const ok = await saveProfiles(profiles);
+      if (!ok) {
+        profiles.pop();
+        return;
+      }
       renderProfiles(profiles);
       console.debug('[options] Добавлен новый профиль');
-      
-      // Прокрутка к новому профилю
+
       setTimeout(() => {
         const wrapper = $('#profiles-wrapper');
         wrapper.lastChild?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
     });
 
-    // Слушатель изменений хранилища (синхронизация между вкладками)
-    browser.storage.onChanged.addListener(async (changes, area) => {
-      if (area !== 'sync') return;
-      if (changes.profiles) {
-        profiles = changes.profiles.newValue || [];
-        renderProfiles(profiles);
-        console.debug('[options] Профили обновлены с другой вкладки');
-      }
-    });
-
     console.debug('[options] Инициализация завершена');
   }
 
-  // ========================================================================
-  // ГЕНЕРАЦИЯ СЛУЧАЙНОГО ID
-  // ========================================================================
-  
   function cryptoRandomId() {
     return 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
   }
 
-  // Запуск инициализации когда DOM готов
   document.addEventListener('DOMContentLoaded', init);
 })();

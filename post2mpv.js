@@ -7,9 +7,10 @@ const contexts = ["link", "image", "video", "audio", "selection", "frame"];
 const CREATE_PROFILE = "createProfile";
 const UPDATE_PROFILE = "updateProfile";
 const DELETE_PROFILE = "deleteProfile";
-const PROFILES = "profiles";
-const OPEN_VIDEO = "openVideo";
 const TITLE = "Play in MPV";
+
+const DEFAULT_HOST = "http://127.0.0.1";
+const DEFAULT_PORT = 7531;
 
 // Имя native host (должно совпадать с зарегистрированным манифестом)
 const NATIVE_HOST_NAME = "post2mpv";
@@ -18,46 +19,12 @@ function onError(error) {
   console.error("[post2mpv]", error);
 }
 
-// Вспомогательные функции для работы с хранилищем
-function storageGet(key) {
-  return new Promise((resolve) => {
-    browser.storage.sync.get(key, (res) => {
-      resolve(res[key]);
-    });
-  });
-}
-
-function storageSet(obj) {
-  return new Promise((resolve) => {
-    browser.storage.sync.set(obj, () => resolve());
-  });
-}
-
-async function getProfiles() {
-  try {
-    return (await storageGet(PROFILES)) || [];
-  } catch (error) {
-    console.debug("Не удалось получить профили:", error);
-    return [];
-  }
-}
-
-async function getProfileById(id) {
-  try {
-    const profiles = await getProfiles();
-    return profiles.find((pf) => pf.id === id) || null;
-  } catch (e) {
-    console.debug("Ошибка getProfileById:", e);
-    return null;
-  }
-}
-
 // sendNative: обёртка для browser.runtime.sendNativeMessage -> Promise
 function sendNative(message, timeout = 15000) {
   return new Promise((resolve, reject) => {
     try {
       let done = false;
-      
+
       browser.runtime.sendNativeMessage(NATIVE_HOST_NAME, message).then(
         (response) => {
           done = true;
@@ -71,7 +38,6 @@ function sendNative(message, timeout = 15000) {
         }
       );
 
-      // Резервный таймаут
       setTimeout(() => {
         if (!done) reject(new Error('истёк таймаут native messaging'));
       }, timeout);
@@ -80,6 +46,55 @@ function sendNative(message, timeout = 15000) {
       reject(e);
     }
   });
+}
+
+async function listProfilesFromNative() {
+  try {
+    const resp = await sendNative({ type: 'listProfiles' });
+    return resp || { status: 'error', message: 'пустой ответ native host' };
+  } catch (e) {
+    return { status: 'error', message: String(e) };
+  }
+}
+
+async function saveProfilesToNative(profiles) {
+  try {
+    const resp = await sendNative({ type: 'saveProfiles', profiles: profiles || [] });
+    return resp || { status: 'error', message: 'пустой ответ native host' };
+  } catch (e) {
+    return { status: 'error', message: String(e) };
+  }
+}
+
+async function getProfiles() {
+  const resp = await listProfilesFromNative();
+  if (!resp || resp.status !== 'ok') {
+    console.debug("Не удалось получить профили:", resp && resp.message);
+    return [];
+  }
+  return resp.profiles || [];
+}
+
+async function getProfileById(id) {
+  try {
+    const profiles = await getProfiles();
+    return profiles.find((pf) => pf.id === id) || null;
+  } catch (e) {
+    console.debug("Ошибка getProfileById:", e);
+    return null;
+  }
+}
+
+function fieldsFromProfile(profile) {
+  return {
+    host: (profile && profile.host) || DEFAULT_HOST,
+    port: (profile && profile.port) || DEFAULT_PORT,
+    action: (profile && profile.action) || "play",
+    params: Array.isArray(profile && profile.args)
+      ? profile.args
+      : (Array.isArray(profile && profile.params) ? profile.params : []),
+    token: (profile && profile.token) || ""
+  };
 }
 
 /**
@@ -102,38 +117,26 @@ async function post2mpv(url, tabId, profileOrOptions) {
   }
 
   try {
-    let host = "http://127.0.0.1";
-    let port = 7531;
+    let host = DEFAULT_HOST;
+    let port = DEFAULT_PORT;
     let action = "play";
     let params = [];
     let token = "";
 
     if (Array.isArray(profileOrOptions)) {
-      // старый формат: массив опций -> используем как параметры
       params = profileOrOptions;
     } else if (typeof profileOrOptions === 'string') {
       const profile = await getProfileById(profileOrOptions);
       if (profile) {
-        if (Array.isArray(profile.content)) {
-          params = profile.content.filter(line => !!line);
-        } else if (typeof profile.content === 'string') {
-          try {
-            const parsed = JSON.parse(profile.content);
-            host = parsed.host || host;
-            port = parsed.port || port;
-            action = parsed.action || action;
-            params = Array.isArray(parsed.args) ? parsed.args : (Array.isArray(parsed.params) ? parsed.params : []);
-            token = parsed.token || "";
-          } catch (e) {
-            console.debug('[post2mpv] Не удалось разобрать содержимое профиля, используем как параметры');
-            // резервный вариант: разделить на строки
-            params = profile.content.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-          }
-        }
+        const fields = fieldsFromProfile(profile);
+        host = fields.host;
+        port = fields.port;
+        action = fields.action;
+        params = fields.params;
+        token = fields.token;
       }
     }
 
-    // Собрать native сообщение
     const message = {
       type: action,
       url,
@@ -155,31 +158,9 @@ async function post2mpv(url, tabId, profileOrOptions) {
   }
 }
 
-async function getOptions(id) {
-  try {
-    const profile = await getProfileById(id);
-    if (!profile) return [];
-    if (Array.isArray(profile.content)) {
-      return profile.content.filter((line) => !!line);
-    }
-    if (typeof profile.content === 'string') {
-      try {
-        const parsed = JSON.parse(profile.content);
-        return Array.isArray(parsed.args) ? parsed.args : (Array.isArray(parsed.params) ? parsed.params : []);
-      } catch (e) {
-        return profile.content.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-      }
-    }
-    return [];
-  } catch (error) {
-    console.debug("Не удалось получить опции для профиля:", id, error);
-    return [];
-  }
-}
-
 async function submenuClicked(info, tab) {
   console.debug('[post2mpv] Клик по подменю:', info.menuItemId);
-  
+
   if (info.parentMenuItemId === "post2mpv" || info.menuItemId === "post2mpv") {
     const url = info.linkUrl || info.srcUrl || info.selectionText || info.frameUrl;
     if (url) {
@@ -300,7 +281,7 @@ async function updateProfile(profile) {
 // ============================================================================
 browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.debug('[post2mpv] Сообщение получено:', request);
-  
+
   if (!request) {
     sendResponse({ status: 'failure', detail: 'нет запроса' });
     return true;
@@ -308,7 +289,21 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   (async () => {
     try {
-      // Обновление меню при изменении профилей
+      if (request.type === 'getProfiles') {
+        const resp = await listProfilesFromNative();
+        sendResponse(resp);
+        return;
+      }
+
+      if (request.type === 'saveProfiles') {
+        const resp = await saveProfilesToNative(request.profiles || []);
+        if (resp && resp.status === 'ok') {
+          await refreshProfiles();
+        }
+        sendResponse(resp);
+        return;
+      }
+
       if (request.type === 'refreshProfiles') {
         console.debug('[post2mpv] Получено сообщение refreshProfiles');
         try {
@@ -321,11 +316,10 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return;
       }
 
-      // Обработка выбора профиля из popup
       if (request.type === 'playWithProfile') {
         const { profileId, url, tabId } = request;
         console.debug('[post2mpv] Получено playWithProfile:', profileId);
-        
+
         try {
           await post2mpv(url, tabId, profileId);
           sendResponse({ status: 'ok' });
@@ -336,27 +330,20 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return;
       }
 
-      // Обработка sendToNative из options.js (тест профиля)
       if (request.type === 'sendToNative') {
         const { profileId, payload } = request;
         const profile = profileId ? await getProfileById(profileId) : null;
-        let host = "http://127.0.0.1";
-        let port = 7531;
+        let host = DEFAULT_HOST;
+        let port = DEFAULT_PORT;
         let token = "";
         let params = [];
-        
+
         if (profile) {
-          if (typeof profile.content === 'string') {
-            try {
-              const parsed = JSON.parse(profile.content);
-              host = parsed.host || host;
-              port = parsed.port || port;
-              token = parsed.token || "";
-              params = Array.isArray(parsed.args) ? parsed.args : (Array.isArray(parsed.params) ? parsed.params : []);
-            } catch (e) {
-              console.debug('[post2mpv] Не удалось разобрать содержимое профиля:', e);
-            }
-          }
+          const fields = fieldsFromProfile(profile);
+          host = fields.host;
+          port = fields.port;
+          token = fields.token;
+          params = fields.params;
         } else if (request.profile) {
           const parsed = request.profile;
           host = parsed.host || host;
@@ -387,22 +374,21 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return;
       }
 
-      // Обработка других типов сообщений (управление профилями)
       const { type, profile } = request;
       switch (type) {
-        case CREATE_PROFILE: 
+        case CREATE_PROFILE:
           await refreshProfiles();
           sendResponse({ status: 'ok' });
           return;
-        case UPDATE_PROFILE: 
+        case UPDATE_PROFILE:
           await updateProfile(profile);
           sendResponse({ status: 'ok' });
           return;
-        case DELETE_PROFILE: 
+        case DELETE_PROFILE:
           await deleteProfile(profile.id);
           sendResponse({ status: 'ok' });
           return;
-        default: 
+        default:
           sendResponse({ status: 'failure', detail: 'неизвестный тип' });
           return;
       }
@@ -420,19 +406,18 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ============================================================================
 browser.runtime.onInstalled.addListener(async (_) => {
   console.debug('[post2mpv] Расширение установлено/обновлено');
-  const profiles = await getProfiles();
+  await refreshProfiles();
+});
 
-  if (profiles.length === 0) {
-    await changeToSingleEntry();
-  } else {
-    await changeToMultiEntries();
-    await createContextMenusFromProfiles(profiles)
-  }
+browser.runtime.onStartup.addListener(async () => {
+  await refreshProfiles();
 });
 
 // ============================================================================
 // ОБРАБОТЧИК КЛИКА ПО МЕНЮ
 // ============================================================================
 browser.menus.onClicked.addListener(submenuClicked);
+
+refreshProfiles();
 
 console.debug('[post2mpv] Фоновый скрипт загружен');

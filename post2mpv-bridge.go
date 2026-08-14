@@ -8,24 +8,110 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 )
 
-type NativeMessage struct {
-	Type   string   `json:"type"`
-	URL    string   `json:"url"`
+type Profile struct {
+	ID     string   `json:"id"`
+	Name   string   `json:"name"`
 	Host   string   `json:"host"`
 	Port   int      `json:"port"`
 	Action string   `json:"action"`
-	Params []string `json:"params"`
+	Args   []string `json:"args"`
 	Token  string   `json:"token"`
 }
 
+type HostsFile struct {
+	Profiles []Profile `json:"profiles"`
+}
+
+type NativeMessage struct {
+	Type     string    `json:"type"`
+	URL      string    `json:"url"`
+	Host     string    `json:"host"`
+	Port     int       `json:"port"`
+	Action   string    `json:"action"`
+	Params   []string  `json:"params"`
+	Token    string    `json:"token"`
+	Profiles []Profile `json:"profiles"`
+}
+
 type NativeResponse struct {
-	Status  string `json:"status"`
-	Code    int    `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
-	Body    string `json:"body,omitempty"`
+	Status   string    `json:"status"`
+	Code     int       `json:"code,omitempty"`
+	Message  string    `json:"message,omitempty"`
+	Body     string    `json:"body,omitempty"`
+	Profiles []Profile `json:"profiles,omitempty"`
+	Path     string    `json:"path,omitempty"`
+}
+
+func configDir() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			home = os.Getenv("HOME")
+		}
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "post2mpv")
+}
+
+func hostsPath() string {
+	return filepath.Join(configDir(), "hosts.json")
+}
+
+func loadHosts() ([]Profile, error) {
+	path := hostsPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []Profile{}, nil
+		}
+		return nil, err
+	}
+
+	var f HostsFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("invalid JSON in %s: %w", path, err)
+	}
+	if f.Profiles == nil {
+		return []Profile{}, nil
+	}
+	return f.Profiles, nil
+}
+
+func saveHosts(profiles []Profile) error {
+	if profiles == nil {
+		profiles = []Profile{}
+	}
+	for i := range profiles {
+		if profiles[i].Args == nil {
+			profiles[i].Args = []string{}
+		}
+	}
+
+	path := hostsPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(HostsFile{Profiles: profiles}, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func readMessage() (*NativeMessage, error) {
@@ -62,6 +148,36 @@ func sendMessage(resp *NativeResponse) error {
 
 	_, err = os.Stdout.Write(data)
 	return err
+}
+
+func handleListProfiles() *NativeResponse {
+	profiles, err := loadHosts()
+	if err != nil {
+		return &NativeResponse{
+			Status:  "error",
+			Message: err.Error(),
+			Path:    hostsPath(),
+		}
+	}
+	return &NativeResponse{
+		Status:   "ok",
+		Profiles: profiles,
+		Path:     hostsPath(),
+	}
+}
+
+func handleSaveProfiles(msg *NativeMessage) *NativeResponse {
+	if err := saveHosts(msg.Profiles); err != nil {
+		return &NativeResponse{
+			Status:  "error",
+			Message: err.Error(),
+			Path:    hostsPath(),
+		}
+	}
+	return &NativeResponse{
+		Status: "ok",
+		Path:   hostsPath(),
+	}
 }
 
 func postToServer(msg *NativeMessage) *NativeResponse {
@@ -198,6 +314,15 @@ func main() {
 				Status:  "error",
 				Message: fmt.Sprintf("Failed to read message: %v", err),
 			})
+			continue
+		}
+
+		switch msg.Type {
+		case "listProfiles":
+			sendMessage(handleListProfiles())
+			continue
+		case "saveProfiles":
+			sendMessage(handleSaveProfiles(msg))
 			continue
 		}
 
