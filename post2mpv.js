@@ -196,13 +196,6 @@ async function changeToMultiEntries() {
       title: "Профили",
       contexts,
     });
-
-    await createContextMenuPromise({
-      parentId: "post2mpv",
-      id: "22941114-4db3-4296-8fc2-49f178843f52",
-      title: TITLE,
-      contexts,
-    });
   } catch (e) {
     console.error('[post2mpv] Ошибка changeToMultiEntries:', e);
   }
@@ -237,19 +230,26 @@ async function createContextMenusFromProfiles(profiles) {
   }
 }
 
-async function refreshProfiles() {
-  try {
-    const profiles = await getProfiles();
+let refreshQueue = Promise.resolve();
 
-    if (profiles.length === 0) {
-      await changeToSingleEntry();
-    } else {
-      await changeToMultiEntries();
-      await createContextMenusFromProfiles(profiles)
-    }
-  } catch (e) {
-    console.error('[post2mpv] Ошибка refreshProfiles:', e);
+async function refreshProfilesNow() {
+  const profiles = await getProfiles();
+
+  if (profiles.length === 0) {
+    await changeToSingleEntry();
+    return;
   }
+
+  await changeToMultiEntries();
+  await createContextMenusFromProfiles(profiles);
+}
+
+function refreshProfiles() {
+  const next = refreshQueue.then(refreshProfilesNow, refreshProfilesNow);
+  refreshQueue = next.catch((e) => {
+    console.error('[post2mpv] Ошибка refreshProfiles:', e);
+  });
+  return next;
 }
 
 async function deleteProfile(menuItemId) {
